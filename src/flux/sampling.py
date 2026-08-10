@@ -1,4 +1,5 @@
 import math
+import json
 from typing import Callable
 
 import torch
@@ -367,19 +368,26 @@ def denoise_with_TDM(
         if vis_dir:
             delta_dir = os.path.join(vis_dir, "delta")
             os.makedirs(delta_dir, exist_ok=True)
-            plt.imsave(os.path.join(delta_dir, f"delta_map_{i}.png"), delta_map.to(torch.float32).cpu().numpy(), cmap="viridis")
+            delta_np = delta_map.to(torch.float32).cpu().numpy()
+            np.save(os.path.join(delta_dir, f"delta_map_{i}.npy"), delta_np)
+            plt.imsave(os.path.join(delta_dir, f"delta_map_{i}.png"), delta_np, cmap="viridis")
 
 
 
         if i == cut:
-            delta_stack = torch.stack([v for k, v in info['map'].items() if k.endswith("_delta_map")], dim=0)  # [N, H_patch, W_patch]
-            # np.save("delta_stack.npy", delta_stack.cpu().to(torch.float32).numpy())
+            recorded_delta_items = sorted(
+                ((int(k.split("_", 1)[0]), v) for k, v in info['map'].items() if k.endswith("_delta_map")),
+                key=lambda item: item[0],
+            )
+            recorded_delta_steps = [step for step, _ in recorded_delta_items]
+            delta_stack = torch.stack([v for _, v in recorded_delta_items], dim=0)  # [N, H_patch, W_patch]
             
             scale = 5
             softmax_weights = F.softmax(delta_stack * scale, dim=0)  # [N, H, W]
             soft_mask = (delta_stack * softmax_weights).sum(dim=0)  # [H, W]
             soft_np = soft_mask.to(torch.float32).cpu().numpy()  # [H_patch, W_patch]
-            smoothed_np = gaussian_filter(soft_np, sigma=0.7)
+            smoothing_sigma = 0.7
+            smoothed_np = gaussian_filter(soft_np, sigma=smoothing_sigma)
 
             from skimage.filters import threshold_otsu
 
@@ -409,8 +417,38 @@ def denoise_with_TDM(
 
 
             if vis_dir:
+                os.makedirs(vis_dir, exist_ok=True)
+                delta_stack_np = delta_stack.to(torch.float32).cpu().numpy()
+                binary_np = binary_map.to(torch.float32).cpu().numpy()
+                np.save(os.path.join(vis_dir, "delta_stack.npy"), delta_stack_np)
+                np.save(os.path.join(vis_dir, "aggregated_soft_tdm.npy"), soft_np)
+                np.save(os.path.join(vis_dir, "smoothed_soft_tdm.npy"), smoothed_np)
+                np.save(os.path.join(vis_dir, "binary_tdm_mask.npy"), binary_np)
+                plt.imsave(os.path.join(vis_dir, "aggregated_soft_tdm.png"), soft_np, cmap="viridis")
+                plt.imsave(os.path.join(vis_dir, "smoothed_soft_tdm.png"), smoothed_np, cmap="viridis")
+                plt.imsave(os.path.join(vis_dir, "binary_tdm_mask.png"), binary_np, cmap="gray")
+                tdm_metadata = {
+                    "cut_step": int(cut),
+                    "front_pad": int(front_pad),
+                    "tail_pad": int(tail_pad),
+                    "inject_step": int(info["inject_step"]),
+                    "recorded_delta_steps": recorded_delta_steps,
+                    "num_recorded_delta_maps": int(delta_stack_np.shape[0]),
+                    "aggregation": "softmax_weighted_sum",
+                    "softmax_scale": scale,
+                    "smoothing": "gaussian_filter",
+                    "smoothing_sigma": smoothing_sigma,
+                    "threshold_method": "otsu",
+                    "threshold": float(threshold),
+                    "tdm_shape": list(soft_np.shape),
+                    "binary_mask_area_ratio_patch_grid": float(binary_np.mean()),
+                    "num_edit_tokens": int(edit_indices.numel()),
+                }
+                with open(os.path.join(vis_dir, "tdm_metadata.json"), "w", encoding="utf-8") as f:
+                    json.dump(tdm_metadata, f, indent=2)
+
                 plt.figure()
-                plt.imshow(binary_map.to(torch.float32).cpu().numpy(), cmap='viridis')
+                plt.imshow(binary_np, cmap='viridis')
                 plt.colorbar()
                 plt.title("Edit Map")
                 plt.savefig(os.path.join(vis_dir, "edit_map.png"))
