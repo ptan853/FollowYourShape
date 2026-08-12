@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 from dataclasses import dataclass
 from glob import iglob
 import argparse
@@ -101,6 +102,14 @@ def main(
     output_dir = args.output_dir
     num_steps = args.num_steps
     offload = args.offload
+    if seed is None:
+        seed = args.seed
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     nsfw_classifier = pipeline("image-classification", model="Falconsai/nsfw_image_detection", device=device)
 
@@ -379,6 +388,8 @@ if __name__ == "__main__":
                         help='the number of timesteps of early trajectory initialization')
     parser.add_argument('--inject', type=int, default=4,
                         help='the number of timesteps which apply the feature sharing')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='fixed seed for reproducible controlled runs')
     parser.add_argument('--output_dir', default='output', type=str,
                         help='the path of the edited image')
     parser.add_argument('--offload', action='store_true', help='set it to True if the memory of GPU is not enough')
