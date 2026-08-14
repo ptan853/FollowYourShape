@@ -11,6 +11,7 @@ from fire import Fire
 from PIL import ExifTags, Image
 
 from flux.sampling import denoise, get_schedule, prepare, unpack, denoise_with_TDM, build_inject_list
+from flux.attention_mask_utils import select_target_token_indices
 from flux.util import (configs, embed_watermark, load_ae, load_clip,
                        load_flow_model, load_t5)
 from transformers import pipeline, DPTForDepthEstimation, DPTImageProcessor
@@ -297,10 +298,28 @@ def main(
 
         timesteps = get_schedule(opts.num_steps, inp_target["img"].shape[1], shift=(name != "flux-schnell"))
 
+        attention_token_indices = None
+        attention_layer_ids = [int(x) for x in args.attention_layers.split(",") if x.strip()]
+        if args.tdm_mask_mode == "attention_gated":
+            if not args.attention_part and args.attention_token_mode in {"part", "part_edit"}:
+                raise ValueError("--attention_part is required for attention-gated part or part_edit mode")
+            if not args.attention_edit and args.attention_token_mode in {"edit", "part_edit"}:
+                raise ValueError("--attention_edit is required for attention-gated edit or part_edit mode")
+            attention_token_indices = select_target_token_indices(
+                t5.tokenizer,
+                target_prompt=opts.target_prompt,
+                part=args.attention_part or "",
+                edit=args.attention_edit or "",
+                max_length=t5.max_length,
+                token_mode=args.attention_token_mode,
+            )
+
         # denoise initial noise
 
         x, _ = denoise_with_TDM(model, **inp_target, timesteps=timesteps, guidance=guidance, inverse=False, info=info, width=opts.width, height=opts.height, inject_list=inject_list, tail_pad=1, front_pad=args.front,
-                                       controlnet=controlnet, control_patch=control_patch, controlnet_scale=controlnet_scale, controlnet_mode=control_mode, guidance_start=guidance_start, guidance_end=guidance_end)       
+                                       controlnet=controlnet, control_patch=control_patch, controlnet_scale=controlnet_scale, controlnet_mode=control_mode, guidance_start=guidance_start, guidance_end=guidance_end,
+                                       tdm_mask_mode=args.tdm_mask_mode, attention_token_indices=attention_token_indices, attention_layer_ids=attention_layer_ids,
+                                       attention_token_mode=args.attention_token_mode, attention_part=args.attention_part, attention_edit=args.attention_edit)
 
         
         if offload:
@@ -400,6 +419,16 @@ if __name__ == "__main__":
                         help="When using 'single' ControlNet, choose 'depth' or 'canny'")
     parser.add_argument('--vis_path', default=None, type=str,
                         help='path to save edit map visualization')
+    parser.add_argument('--tdm_mask_mode', default='original', choices=['original', 'attention_gated'],
+                        help="Mask used for Stage 3 KV injection. 'original' keeps Follow-Your-Shape unchanged.")
+    parser.add_argument('--attention_token_mode', default='part_edit', choices=['part', 'edit', 'part_edit'],
+                        help='Target prompt tokens used when --tdm_mask_mode attention_gated is enabled')
+    parser.add_argument('--attention_part', default=None, type=str,
+                        help='Part label used to find target prompt tokens for attention gating')
+    parser.add_argument('--attention_edit', default=None, type=str,
+                        help='Edit label used to find target prompt tokens for attention gating')
+    parser.add_argument('--attention_layers', default='28,29,30,31,32,33,34,35,36,37', type=str,
+                        help='Comma-separated FLUX single-stream layer ids for attention gating')
 
 
     args = parser.parse_args()
